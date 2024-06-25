@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>五行小球模拟器</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        canvas {
+            border: 1px solid black;
+        }
+
+        #controls,
+        #speed-controls {
+            margin-top: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        #info-panel {
+            margin-top: 20px;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        label {
+            display: flex;
+            flex-direction: column;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>五行小球模拟器</h1>
+    <canvas id="gameCanvas" width="800" height="200"></canvas>
+    <div id="controls">
+        <label>
+            小球数量:
+            <input type="number" id="ballCount" min="1" max="20" value="8">
+        </label>
+        <label>
+            全局速度:
+            <input type="number" id="globalSpeed" min="0.1" max="10" step="0.1" value="1">
+        </label>
+        <button id="resetBtn">重置</button>
+        <button id="randomBtn">随机</button>
+        <button id="startBtn">开始</button>
+        <button id="restoreBtn">还原位置</button>
+        <button id="pauseBtn">暂停</button>
+        <label>
+            影响范围:
+            <input type="number" id="influenceRange" min="1" max="5" value="1">
+        </label>
+        <label>
+            <input type="checkbox" id="onlyRunTimeCalc" checked> 仅运行时计算速度变化
+        </label>
+    </div>
+    <div id="speed-controls">
+        <label>
+            A克B时A速度变化:
+            <input type="number" id="suppressA" value="1" step="0.1">
+        </label>
+        <label>
+            A克B时B速度变化:
+            <input type="number" id="suppressB" value="0" step="0.1">
+        </label>
+        <label>
+            A生B时A速度变化:
+            <input type="number" id="generateA" value="1" step="0.1">
+        </label>
+        <label>
+            A生B时B速度变化:
+            <input type="number" id="generateB" value="1" step="0.1">
+        </label>
+    </div>
+    <div id="info-panel"></div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const infoPanel = document.getElementById('info-panel');
+
+        const elementColors = {
+            '金': '#eb8e39',
+            '木': '#388022',
+            '水': '#0000ad',
+            '火': '#e83223',
+            '土': '#93531c'
+        };
+
+        const elementRelations = {
+            '木': { generates: '火', suppresses: '土' },
+            '火': { generates: '土', suppresses: '金' },
+            '土': { generates: '金', suppresses: '水' },
+            '金': { generates: '水', suppresses: '木' },
+            '水': { generates: '木', suppresses: '火' }
+        };
+
+        const tianGanToElement = {
+            '甲': '木', '乙': '木',
+            '丙': '火', '丁': '火',
+            '戊': '土', '己': '土',
+            '庚': '金', '辛': '金',
+            '壬': '水', '癸': '水'
+        };
+
+        const tianGanToYinYang = {
+            '甲': '阳', '乙': '阴',
+            '丙': '阳', '丁': '阴',
+            '戊': '阳', '己': '阴',
+            '庚': '阳', '辛': '阴',
+            '壬': '阳', '癸': '阴'
+        };
+        const wuxingCombinations = {
+            '甲': '己', '己': '甲',
+            '乙': '庚', '庚': '乙',
+            '丙': '辛', '辛': '丙',
+            '丁': '壬', '壬': '丁',
+            '戊': '癸', '癸': '戊'
+        };
+        const tianGan = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸'];
+
+        class Ball {
+            constructor(name, tianGanChar, element, yinYang, strength, size, speed, x) {
+                this.name = name;
+                this.tianGanChar = tianGanChar;
+                this.element = element;
+                this.yinYang = yinYang;
+                this.strength = strength;
+                this.size = size;
+                this.speed = speed;
+                this.x = x;
+                this.y = canvas.height / 2;
+                this.color = elementColors[element];
+                this.originalX = x;
+                this.originalSpeed = speed;
+                this.stopped = false;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.closePath();
+
+                ctx.fillStyle = 'white';
+                ctx.font = `${this.size * 0.8}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.name, this.x, this.y);
+            }
+
+            update() {
+                if (!this.stopped) {
+                    this.x += this.speed;
+                    if (this.x <= this.size || this.x >= canvas.width - this.size) {
+                        this.speed = 0;
+                        this.stopped = true;
+                    }
+                }
+            }
+        }
+
+        let balls = [];
+        let isRunning = false;
+        let onlyRunTimeCalc = true;
+        let influenceRange = 1;
+        let globalSpeed = 1;
+        let isFirstStart = true;
+
+        function getRandomTianganChar() {
+            return tianganChars[Math.floor(Math.random() * tianganChars.length)];
+        }
+
+        function createBall(index, totalBalls) {
+            const tianGanChar = tianGan[Math.floor(Math.random() * tianGan.length)];
+            const element = tianGanToElement[tianGanChar];
+            const name = tianGanChar + (index + 1);
+            const yinYangValue = tianGanToYinYang[tianGanChar];
+            const strength = 1;
+            const size = 20;
+            const speed = 0; // 初始速度为0，开始时会设置
+            const x = (index + 1) * (canvas.width / (totalBalls + 1));
+
+            return new Ball(name, tianGanChar, element, yinYangValue, strength, size, speed, x);
+        }
+
+        function resetSimulation() {
+            const ballCount = parseInt(document.getElementById('ballCount').value);
+            balls = [];
+            for (let i = 0; i < ballCount; i++) {
+                balls.push(createBall(i, ballCount));
+            }
+            drawScene();
+            updateInfoPanel();
+            isFirstStart = true;
+            isRunning = false;
+        }
+
+        function randomizeBalls() {
+            const ballCount = parseInt(document.getElementById('ballCount').value);
+            balls = [];
+            for (let i = 0; i < ballCount; i++) {
+                balls.push(createBall(i, ballCount));
+            }
+            drawScene();
+            updateInfoPanel();
+            isFirstStart = true;
+            isRunning = false;
+        }
+
+        function startSimulation() {
+            if (isFirstStart) {
+                globalSpeed = parseFloat(document.getElementById('globalSpeed').value);
+                balls.forEach(ball => {
+                    ball.speed = (Math.random() > 0.5 ? 1 : -1) * globalSpeed;
+                    ball.originalSpeed = ball.speed;
+                    ball.stopped = false;
+                });
+                isFirstStart = false;
+            }
+            if (!isRunning) {
+                isRunning = true;
+                animate();
+            }
+
+        }
+
+        function restorePositions() {
+            balls.forEach(ball => {
+                ball.x = ball.originalX;
+                ball.speed = 0;
+                ball.stopped = false;
+            });
+            drawScene();
+            updateInfoPanel();
+            isFirstStart = true;
+            isRunning = false;
+        }
+
+        function pauseSimulation() {
+            isRunning = false;
+        }
+
+        function updateInfoPanel() {
+            infoPanel.innerHTML = balls.map(ball => `
+                <p>${ball.name}: 元素=${ball.element}, 阴阳=${ball.yinYang}, 力量=${ball.strength}, 
+                   位置=${Math.round(ball.x)}, 速度=${ball.speed.toFixed(2)}, 
+                   左距离=${Math.round(ball.x)}, 右距离=${Math.round(canvas.width - ball.x)},
+                   状态=${ball.stopped ? '停止' : '运动中'}</p>
+            `).join('');
+        }
+
+        function calculateInteractions() {
+            for (let i = 0; i < balls.length; i++) {
+                const ball = balls[i];
+                for (let j = 1; j <= influenceRange; j++) {
+                    if (i - j >= 0) applyInteraction(ball, balls[i - j]);
+                    if (i + j < balls.length) applyInteraction(ball, balls[i + j]);
+                }
+            }
+        }
+
+        function applyInteraction(ballA, ballB) {
+            if (ballA.stopped || ballB.stopped) return;
+
+            const relation = elementRelations[ballA.element];
+            const suppressA = parseFloat(document.getElementById('suppressA').value);
+            const suppressB = parseFloat(document.getElementById('suppressB').value);
+            const generateA = parseFloat(document.getElementById('generateA').value);
+            const generateB = parseFloat(document.getElementById('generateB').value);
+
+            if (relation.generates === ballB.element) {
+                ballA.speed += generateA * Math.sign(ballA.speed);
+                ballB.speed += generateB * Math.sign(ballB.speed);
+            } else if (relation.suppresses === ballB.element) {
+                ballA.speed += suppressA * Math.sign(ballA.speed);
+                ballB.speed = Math.sign(ballB.speed) * Math.max(0, Math.abs(ballB.speed) + suppressB);
+            }
+        }
+
+        function checkCollisions() {
+            for (let i = 0; i < balls.length; i++) {
+                for (let j = i + 1; j < balls.length; j++) {
+                    const ballA = balls[i];
+                    const ballB = balls[j];
+                    const dx = ballA.x - ballB.x;
+                    if (Math.abs(dx) < ballA.size + ballB.size) {
+                        if (wuxingCombinations[ballA.tianGanChar] === ballB.tianGanChar) {
+                            balls.splice(j, 1);
+                            balls.splice(i, 1);
+                            i--;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        function drawScene() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 绘制横线
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height / 2);
+            ctx.lineTo(canvas.width, canvas.height / 2);
+            ctx.strokeStyle = '#000000';
+            ctx.stroke();
+
+            // 绘制小球
+            balls.forEach(ball => ball.draw());
+        }
+
+        function animate() {
+            if (!isRunning) return;
+
+            if (!onlyRunTimeCalc) {
+                calculateInteractions();
+            }
+
+            balls.forEach(ball => ball.update());
+            checkCollisions();
+            drawScene();
+            updateInfoPanel();
+            requestAnimationFrame(animate);
+        }
+
+        // Event Listeners
+        document.getElementById('resetBtn').addEventListener('click', resetSimulation);
+        document.getElementById('randomBtn').addEventListener('click', randomizeBalls);
+        document.getElementById('startBtn').addEventListener('click', startSimulation);
+        document.getElementById('restoreBtn').addEventListener('click', restorePositions);
+        document.getElementById('pauseBtn').addEventListener('click', pauseSimulation);
+
+        document.getElementById('influenceRange').addEventListener('change', (e) => {
+            influenceRange = parseInt(e.target.value);
+        });
+
+        document.getElementById('onlyRunTimeCalc').addEventListener('change', (e) => {
+            onlyRunTimeCalc = e.target.checked;
+        });
+
+        // Initialize
+        resetSimulation();
+    </script>
+</body>
+
+</html>
